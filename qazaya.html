@@ -114,6 +114,13 @@ input:focus,select:focus,textarea:focus{outline:2px solid var(--accent);outline-
     <p class="msg" id="bad-d"></p>
   </div>
 
+  <div id="pick" class="card hidden">
+    <h2 style="font-weight:400;margin-top:0" id="pick-h"></h2>
+    <div class="q"><label class="lbl" for="pick-jam" id="pick-jl"></label><select id="pick-jam"></select></div>
+    <div class="q"><label class="lbl" for="pick-mz" id="pick-ml"></label><select id="pick-mz" disabled></select></div>
+    <p class="msg" id="pick-msg"></p>
+  </div>
+
   <div id="thanks" class="card done hidden">
     <div class="big">✓</div>
     <h2 id="thanks-h" style="font-weight:400"></h2>
@@ -127,6 +134,7 @@ input:focus,select:focus,textarea:focus{outline:2px solid var(--accent);outline-
         <div><div class="msg small" id="whojam"></div><h2 id="whomz"></h2></div>
         <span class="pill" id="whocount"></span>
       </div>
+      <button class="btn ghost small hidden" id="change" type="button" style="margin-top:10px"></button>
     </div>
     <div class="card">
       <div class="row between" style="margin-bottom:10px">
@@ -197,10 +205,10 @@ $('bad-h').textContent=U('badTitle','This link is not right');
 $('bad-d').textContent=U('badText','The link does not match any mauze. Please use the link sent to you, or ask for it again.');
 $('loadmsg').textContent=U('loading','Loading…');
 
-var ROWS=[],state={},CODE=(location.hash||'').replace(/^#/,'');
+var ROWS=[],state={},CODE=(location.hash||'').replace(/^#/,'').trim(),PICK=null,PLACES=[];
 
 function show(which){
-  ['loading','badlink','main','thanks'].forEach(function(n){$(n).classList.toggle('hidden',n!==which)});
+  ['loading','badlink','main','thanks','pick'].forEach(function(n){$(n).classList.toggle('hidden',n!==which)});
 }
 function render(){
   var f=($('search').value||'').toLowerCase(),lastMz='',h='';
@@ -249,8 +257,9 @@ $('submit').onclick=async function(){
   var btn=$('submit');btn.disabled=true;msg.textContent='…';
   try{
     if(!$('f-website').value){
-      var res=await fetch(SB_URL+'/rest/v1/rpc/submit_qazaya',{method:'POST',headers:sbHeaders(),
-        body:JSON.stringify({p_code:CODE,p_form:FORM,p_rows:out})});
+      var res=CODE
+        ?await fetch(SB_URL+'/rest/v1/rpc/submit_qazaya',{method:'POST',headers:sbHeaders(),body:JSON.stringify({p_code:CODE,p_form:FORM,p_rows:out})})
+        :await fetch(SB_URL+'/rest/v1/rpc/submit_qazaya_by_mauze',{method:'POST',headers:sbHeaders(),body:JSON.stringify({p_form:FORM,p_jamiyat:PICK.jam,p_mauze:PICK.mz,p_rows:out})});
       if(!res.ok){var tx='';try{tx=await res.text()}catch(e2){}throw new Error(tx||'failed')}
     }
     $('thanks-d').textContent=n+' '+U('reported','qazaya reported');
@@ -265,7 +274,7 @@ $('submit').onclick=async function(){
 async function boot(){
   if(DEMO){ROWS=DEMO.rows;start();return}
   if(!configured()){show('badlink');$('bad-d').textContent='The form is not connected to the database yet.';return}
-  if(!CODE){show('badlink');return}
+  if(!CODE){loadPlaces();return}
   try{
     var r=await fetch(SB_URL+'/rest/v1/rpc/qazaya_for',{method:'POST',headers:sbHeaders(),body:JSON.stringify({p_code:CODE,p_form:FORM})});
     if(!r.ok)throw new Error('failed');
@@ -274,7 +283,41 @@ async function boot(){
     start();
   }catch(e){show('badlink');$('bad-d').textContent=U('loadfail','Could not load your qazaya. Please check your internet and open the link again.')}
 }
+function rpc(name,body){
+  return fetch(SB_URL+'/rest/v1/rpc/'+name,{method:'POST',headers:sbHeaders(),body:JSON.stringify(body)})
+    .then(function(r){if(!r.ok)throw new Error('failed');return r.json()});
+}
+$('pick-h').textContent=U('pickTitle','Choose your jamiyat and mauze');
+$('pick-jl').textContent=U('pickJam','Jamiyat');
+$('pick-ml').textContent=U('pickMz','Mauze');
+$('change').textContent=U('change','Choose another mauze');
+async function loadPlaces(){
+  try{PLACES=await rpc('qazaya_places',{p_form:FORM})}
+  catch(e){show('badlink');$('bad-h').textContent=U('loadfailT','Could not load');$('bad-d').textContent=U('loadfail','Could not load the list. Please check your internet and open the link again.');return}
+  if(!PLACES.length){show('badlink');$('bad-h').textContent=U('noneT','Nothing to report yet');$('bad-d').textContent=U('none','No qazaya have been listed yet, or this form is closed.');return}
+  var jams=[];PLACES.forEach(function(p){if(jams.indexOf(p.jamiyat)<0)jams.push(p.jamiyat)});
+  $('pick-jam').innerHTML='<option value="">— '+esc(U('pickJam','Jamiyat'))+' —</option>'+jams.map(function(j){return '<option>'+esc(j)+'</option>'}).join('');
+  $('pick-mz').innerHTML='<option value="">— '+esc(U('pickMz','Mauze'))+' —</option>';$('pick-mz').disabled=true;
+  $('pick-msg').textContent='';
+  show('pick');
+}
+$('pick-jam').onchange=function(){
+  var j=this.value,ms=PLACES.filter(function(p){return p.jamiyat===j});
+  $('pick-mz').innerHTML='<option value="">— '+esc(U('pickMz','Mauze'))+' —</option>'+ms.map(function(p){return '<option value="'+esc(p.mauze)+'">'+esc(p.mauze)+' ('+p.n+')</option>'}).join('');
+  $('pick-mz').disabled=!j;
+};
+$('pick-mz').onchange=async function(){
+  var j=$('pick-jam').value,m=this.value;if(!j||!m)return;
+  $('pick-msg').textContent=U('loading','Loading…');
+  try{
+    ROWS=await rpc('qazaya_by_mauze',{p_form:FORM,p_jamiyat:j,p_mauze:m});
+    if(!ROWS.length){$('pick-msg').textContent=U('noneMz','No qazaya are listed under this mauze.');return}
+    PICK={jam:j,mz:m};state={};$('search').value='';start();
+  }catch(e){$('pick-msg').textContent=U('loadfail','Could not load. Please check your internet and try again.')}
+};
+$('change').onclick=function(){PICK=null;ROWS=[];$('submit-msg').textContent='';show('pick');window.scrollTo(0,0)};
 function start(){
+  $('change').classList.toggle('hidden',!!CODE||!!DEMO);
   var mz={},jam=ROWS[0].jamiyat;
   ROWS.forEach(function(q){mz[q.mauze||q.mauze1]=1;
     state[q.id]={on:(q.stages&&q.stages.length>0),stages:{}};
